@@ -1,5 +1,5 @@
 import collections
-from network import Network
+from network import ValueNetwork
 import numpy as np
 import os
 from position import Position
@@ -23,20 +23,20 @@ class ValueTraining(object):
     self.session = tf.Session(config=tf.ConfigProto(gpu_options=tf.GPUOptions(
         allow_growth=True)))
 
-    self.value_network = Network('value')
+    self.value_network = ValueNetwork('value')
 
     # Train ops
     self.create_train_op(self.value_network)
     self.writer = tf.summary.FileWriter(self.run_dir)
 
-    if not util.restore(self.session, self.run_dir, 'value'):
+    if not util.restore(self.session, self.run_dir, self.value_network):
       self.session.run(tf.global_variables_initializer())
 
   def create_train_op(self, value_network):
     self.result = tf.placeholder(tf.float32, shape=[None], name='result')
     loss = tf.reduce_mean(
         tf.squared_difference(self.value_network.value, self.result))
-    optimizer = tf.train.GradientDescentOptimizer(self.config.learning_rate)
+    optimizer = tf.train.AdamOptimizer(self.config.learning_rate)
     self.global_step = tf.contrib.framework.get_or_create_global_step()
     self.train_op = optimizer.minimize(loss, self.global_step)
 
@@ -63,7 +63,7 @@ class ValueTraining(object):
       self.save()
 
   def save(self):
-    util.save(self.session, self.run_dir, 'value')
+    util.save(self.session, self.run_dir, self.value_network)
 
 
 class PositionResults(object):

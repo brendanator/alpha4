@@ -1,14 +1,13 @@
 from consts import *
-import os
 import tensorflow as tf
 import util
 
 
-class Network(object):
+class BaseNetwork(object):
   def __init__(self, scope):
     self.scope = scope
 
-    with tf.variable_scope(scope):
+    with tf.name_scope('inputs'):
       self.turn = tf.placeholder(tf.float32, shape=[None], name='turn')
       tiled_turn = tf.tile(
           tf.reshape(util.turn_win(self.turn), [-1, 1, 1, 1]),
@@ -35,74 +34,14 @@ class Network(object):
       tiled_constant_features = tf.tile(constant_features,
                                         [batch_size, 1, 1, 1])
 
-      feature_planes = tf.concat(
+      self.feature_planes = tf.concat(
           [
               tiled_turn, self.disks, empty, legal_moves, self.threats,
               tiled_constant_features
           ],
           axis=1)
 
-      conv1 = tf.layers.conv2d(
-          feature_planes,
-          filters=32,
-          kernel_size=[4, 5],
-          padding='same',
-          data_format='channels_first',
-          activation=tf.nn.relu,
-          name='conv1')
-      conv2 = tf.layers.conv2d(
-          conv1,
-          filters=32,
-          kernel_size=[4, 5],
-          padding='same',
-          data_format='channels_first',
-          activation=tf.nn.relu,
-          name='conv2')
-      conv3 = tf.layers.conv2d(
-          conv2,
-          filters=32,
-          kernel_size=[4, 5],
-          padding='same',
-          data_format='channels_first',
-          activation=tf.nn.relu,
-          name='conv3')
-      final_conv = tf.layers.conv2d(
-          conv3,
-          filters=1,
-          kernel_size=[1, 1],
-          data_format='channels_first',
-          name='final_conv')
-
-      conv_layers = [conv1, conv2, conv3, final_conv]
-
-      with tf.name_scope('policy'):
-        disk_bias = tf.get_variable('disk_bias', shape=[HEIGHT, WIDTH])
-        disk_logits = tf.add(final_conv, disk_bias, name='disk_logits')
-
-        # Make illegal moves impossible
-        legal_disk_logits = tf.nn.relu(disk_logits) * legal_moves
-        illegal_penalty = (legal_moves - 1) * ILLEGAL_PENALTY
-        legal_disk_logits = tf.contrib.layers.flatten(
-            tf.add(
-                legal_disk_logits, illegal_penalty, name='legal_disk_logits'))
-
-        self.policy = tf.nn.softmax(legal_disk_logits, name='policy')
-
-        self.entropy = tf.reduce_sum(
-            self.policy * -tf.log(self.policy + EPSILON),  # Avoid Nans
-            axis=1,
-            name='entropy')
-
-        self.policy_layers = conv_layers + [
-            disk_logits, self.policy, self.entropy
-        ]
-
-      with tf.name_scope('value'):
-        fully_connected = tf.layers.dense(
-            final_conv, 256, name='fully_connected')
-        self.value = tf.layers.dense(fully_connected, 1, tf.tanh, name='value')
-
-        self.value_layers = conv_layers + [fully_connected, self.value]
+      # self.feature_planes = tf.transpose(self.feature_planes, [0, 2, 3, 1])
 
   @property
   def variables(self):
@@ -113,3 +52,101 @@ class Network(object):
     for self_var, other_var in zip(self.variables, other.variables):
       copy_ops.append(tf.assign(other_var, self_var))
     return copy_ops
+
+
+class PolicyNetwork(BaseNetwork):
+  def __init__(self, scope):
+    with tf.variable_scope(scope):
+      super(PolicyNetwork, self).__init__(scope)
+
+      with tf.name_scope('policy'):
+        conv1 = tf.layers.conv2d(
+            self.feature_planes,
+            filters=32,
+            kernel_size=[4, 5],
+            padding='same',
+            data_format='channels_first',
+            use_bias=False,
+            name='conv1')
+        conv2 = tf.layers.conv2d(
+            conv1,
+            filters=32,
+            kernel_size=[4, 5],
+            padding='same',
+            data_format='channels_first',
+            activation=tf.nn.relu,
+            name='conv2')
+        conv3 = tf.layers.conv2d(
+            conv2,
+            filters=32,
+            kernel_size=[4, 5],
+            padding='same',
+            data_format='channels_first',
+            activation=tf.nn.relu,
+            name='conv3')
+        final_conv = tf.layers.conv2d(
+            conv3,
+            filters=1,
+            kernel_size=[1, 1],
+            data_format='channels_first',
+            name='final_conv')
+
+        disk_bias = tf.get_variable('disk_bias', shape=[TOTAL_DISKS])
+        disk_logits = tf.add(
+            tf.contrib.layers.flatten(final_conv),
+            disk_bias,
+            name='disk_logits')
+        self.temperature = tf.placeholder_with_default(
+            1.0, (), name='temperature')
+        disk_logits /= self.temperature
+
+        # Make illegal moves impossible:
+        #   - Legal moves have positive logits
+        #   - Illegal moves have -ILLEGAL_PENALTY logits
+        legal_moves = tf.contrib.layers.flatten(self.legal_moves)
+        legal_disk_logits = (tf.nn.relu(disk_logits) * legal_moves +
+                             (legal_moves - 1) * ILLEGAL_PENALTY)
+
+        self.policy = tf.nn.softmax(legal_disk_logits, name='policy')
+        # TODO Remove?
+        self.legal_column_policy = tf.boolean_mask(self.policy,
+                                                   tf.equal(legal_moves, 1))
+        self.sample_move = tf.squeeze(
+            tf.multinomial(legal_disk_logits, 1) % WIDTH, axis=1)
+
+        self.entropy = tf.reduce_sum(
+            self.policy * -tf.log(self.policy + EPSILON),  # Avoid Nans
+            axis=1,
+            name='entropy')
+
+        self.policy_layers = [
+            conv1, conv2, conv3, final_conv, disk_logits, self.policy,
+            self.entropy
+        ]
+
+
+class ValueNetwork(BaseNetwork):
+  def __init__(self, scope):
+    with tf.variable_scope(scope):
+      super(ValueNetwork, self).__init__(scope)
+
+      with tf.name_scope('value'):
+        conv = tf.layers.conv2d(
+            self.feature_planes,
+            filters=16,
+            kernel_size=[6, 1],
+            padding='valid',
+            data_format='channels_first',
+            name='conv')
+        fully_connected = tf.layers.dense(
+            tf.contrib.layers.flatten(conv),
+            units=32,
+            activation=tf.nn.relu,
+            use_bias=False,
+            name='fully_connected')
+        self.value = tf.squeeze(
+            tf.layers.dense(fully_connected, 1, tf.tanh, use_bias=False),
+            axis=1,
+            name='value')
+
+        self.value_layers = [conv, fully_connected, self.value]

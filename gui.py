@@ -85,6 +85,7 @@ class GUI(object):
       return
 
     self.app.config(cursor='watch')
+    self.app.update()
     column = self.alpha4.play(self.position)
     if column != None:
       self.position = self.position.move(column)

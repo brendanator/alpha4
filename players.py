@@ -8,7 +8,7 @@ class Player(object):
     return [self.play_single(position) for position in positions]
 
   def play_single(self, position):
-    raise NotImplementedError()
+    return self.play([position])[0]
 
 
 class RandomPlayer(Player):
@@ -115,10 +115,10 @@ class ParityThreatPlayer(Player):
     return np.random.choice(best_moves)
 
 
-class NetworkPlayer(Player):
-  def __init__(self, network, session):
-    self.name = network.scope
-    self.network = network
+class PolicyPlayer(Player):
+  def __init__(self, policy_network, session):
+    self.name = policy_network.scope
+    self.policy_network = policy_network
     self.session = session
 
   def play(self, positions):
@@ -128,12 +128,47 @@ class NetworkPlayer(Player):
     legal_moves = [position.legal_moves for position in positions]
     threats = [position.threats for position in positions]
 
-    policies = self.session.run(self.network.policy, {
-        self.network.turn: turns,
-        self.network.disks: disks,
-        self.network.empty: empty,
-        self.network.legal_moves: legal_moves,
-        self.network.threats: threats
+    policies = self.session.run(self.policy_network.policy, {
+        self.policy_network.turn: turns,
+        self.policy_network.disks: disks,
+        self.policy_network.empty: empty,
+        self.policy_network.legal_moves: legal_moves,
+        self.policy_network.threats: threats
+    })
+
+    moves = []
+    for policy, position in zip(policies, positions):
+      column = np.random.choice(TILED_COLUMNS, p=policy)
+      if position.legal_column(column):
+        moves.append(column)
+      else:
+        print(self.name)
+        print(position)
+        print(policy.reshape(HEIGHT, WIDTH))
+        print(column)
+        raise Exception('Illegal column chosen: %d' % column)
+    return moves
+
+
+class ValuePlayer(Player):
+  def __init__(self, value_network, session):
+    self.name = value_network.scope
+    self.value_network = value_network
+    self.session = session
+
+  def play(self, positions):
+    turns = [position.turn for position in positions]
+    disks = [position.disks for position in positions]
+    empty = [position.empty for position in positions]
+    legal_moves = [position.legal_moves for position in positions]
+    threats = [position.threats for position in positions]
+
+    policies = self.session.run(self.value_network.value, {
+        self.value_network.turn: turns,
+        self.value_network.disks: disks,
+        self.value_network.empty: empty,
+        self.value_network.legal_moves: legal_moves,
+        self.value_network.threats: threats
     })
 
     moves = []

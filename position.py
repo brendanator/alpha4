@@ -4,25 +4,28 @@ from consts import *
 
 class Position(object):
   __slots__ = [
-      'turn', 'disks', 'empty', 'legal_moves', 'threats', 'result', 'win'
+      'turn', 'disks', 'empty', 'legal_moves', 'threats', 'result', 'win',
+      'hash_value'
   ]
 
   def __init__(self, position=None, column=None, disks=None, turn=RED):
     if position is None:
       # New game
       self.turn = RED
-      self.disks = np.zeros([2, HEIGHT, WIDTH], dtype=np.byte)
-      self.empty = np.ones([HEIGHT, WIDTH], dtype=np.byte)
-      self.legal_moves = np.zeros([HEIGHT, WIDTH], dtype=np.byte)
+      self.disks = np.zeros([COLOURS, HEIGHT, WIDTH], dtype=bool)
+      self.empty = np.ones([HEIGHT, WIDTH], dtype=bool)
+      self.legal_moves = np.zeros([HEIGHT, WIDTH], dtype=bool)
       self.legal_moves[-1] = True
       # Threats are a single missing disk from a four
-      self.threats = np.zeros([2, HEIGHT, WIDTH], dtype=np.byte)
+      self.threats = np.zeros([COLOURS, HEIGHT, WIDTH], dtype=bool)
       self.result = None
+      self.hash_value = NEW_POSITION_HASH
     elif type(position) == str:
       # Construct from __repr__
-      self.disks = np.zeros([2, HEIGHT, WIDTH], dtype=np.byte)
-      self.empty = np.ones([HEIGHT, WIDTH], dtype=np.byte)
-      self.legal_moves = np.zeros([HEIGHT, WIDTH], dtype=np.byte)
+      self.disks = np.zeros([COLOURS, HEIGHT, WIDTH], dtype=bool)
+      self.empty = np.ones([HEIGHT, WIDTH], dtype=bool)
+      self.legal_moves = np.zeros([HEIGHT, WIDTH], dtype=bool)
+      self.hash_value = NEW_POSITION_HASH
 
       for index, disk in enumerate(position):
         row = index // WIDTH
@@ -30,23 +33,24 @@ class Position(object):
         if disk == '.':
           if row:
             self.legal_moves[row - 1, column] = False
-          self.legal_moves[row, column] = True
           self.empty[row, column] = True
+          self.legal_moves[row, column] = True
         else:
           colour = RED if disk == 'r' else YELLOW
           self.disks[colour, row, column] = True
-          self.legal_moves[row, column] = False
           self.empty[row, column] = False
+          self.legal_moves[row, column] = False
+          self.update_hash(colour, row, column)
 
-      self.turn = np.count_nonzero(self.empty) % 2
-      self.threats = np.zeros([2, HEIGHT, WIDTH], dtype=np.byte)
+      self.turn = np.count_nonzero(self.empty) % COLOURS
+      self.threats = np.zeros([COLOURS, HEIGHT, WIDTH], dtype=bool)
       self.result = None
-      for index in range(TOTAL_DISKS):
-        row = index // WIDTH
-        column = index % WIDTH
-        self.check_result_and_threats(row, column)
+      for row in range(HEIGHT):
+        for column in range(WIDTH):
+          self.check_result_and_threats(row, column)
+
     else:
-      # Make move from old position
+      # Play move from old position
       self.turn = 1 - position.turn
       self.disks = np.copy(position.disks)
       self.empty = np.copy(position.empty)
@@ -60,8 +64,12 @@ class Position(object):
       self.legal_moves[row, column] = False
       if row:
         self.legal_moves[row - 1, column] = True
-
+      self.hash_value = position.hash_value
+      self.update_hash(position.turn, row, column)
       self.check_result_and_threats(row, column)
+
+  def update_hash(self, colour, row, column):
+    self.hash_value ^= DISK_HASHES[colour, row, column]
 
   def check_result_and_threats(self, row, column):
     if not self.result and not np.any(self.empty):
@@ -71,7 +79,7 @@ class Position(object):
       empty = self.empty & four
       empty_count = np.count_nonzero(empty)
       if empty_count == 0:
-        self.threats &= 1 - four
+        self.threats &= np.invert(four)
         red_four_count = np.count_nonzero(self.disks[0] & four)
         if red_four_count == 4:
           self.result = RED_WIN
@@ -90,10 +98,10 @@ class Position(object):
     return self.result is not None
 
   def legal_columns(self):
-    return COLUMNS[np.count_nonzero(self.empty, axis=0) > 0]
+    return COLUMNS[self.empty[0]]
 
   def legal_column(self, column):
-    return np.any(self.legal_moves[:, column])
+    return self.empty[0, column]
 
   def move(self, column):
     if not self.gameover():
@@ -103,6 +111,13 @@ class Position(object):
 
   def children(self):
     return [self.move(move) for move in self.legal_columns()]
+
+  def __hash__(self):
+    return hash(self.hash_value)
+
+  def __eq__(self, other):
+    # The hash is designed to be unique for each position
+    return self.hash_value == other.hash_value
 
   def __str__(self):
     result = ''
@@ -200,3 +215,4 @@ if __name__ == '__main__':
   assert (np.all(pos.threats == pos_repr.threats))
   assert (pos.result == pos_repr.result)
   assert (np.all(pos.win == pos_repr.win))
+  assert (hash(pos) == hash(pos_repr))

@@ -1,7 +1,7 @@
-from network import Network
+from network import PolicyNetwork
 import numpy as np
 import os
-from players import NetworkPlayer, RandomPlayer
+from players import PolicyPlayer, RandomPlayer
 from position import Position
 import tensorflow as tf
 import util
@@ -10,7 +10,7 @@ flags = tf.app.flags
 flags.DEFINE_string('run_dir', 'latest', 'Run directory')
 flags.DEFINE_string('exploratory_player', 'network-1',
                     'Name of exploratory player')
-flags.DEFINE_string('playout_player', 'alpha4', 'Name of playout player')
+flags.DEFINE_string('playout_player', 'policy', 'Name of playout player')
 flags.DEFINE_integer('max_sample_move', 30, '')
 flags.DEFINE_integer('num_games', 1000, 'Number of games per sample move')
 flags.DEFINE_integer('max_random_moves', 10,
@@ -25,14 +25,15 @@ class PositionGenerator(object):
     session = tf.Session(config=tf.ConfigProto(gpu_options=tf.GPUOptions(
         allow_growth=True)))
     self.random_player = RandomPlayer()
-    self.exploratory_player = NetworkPlayer(
-        Network(config.exploratory_player), session)
-    self.playout_player = NetworkPlayer(
-        Network(config.playout_player), session)
+    self.exploratory_network = PolicyNetwork(config.exploratory_player)
+    self.exploratory_player = PolicyPlayer(self.exploratory_network, session)
+
+    self.playout_network = PolicyNetwork(config.playout_player)
+    self.playout_player = PolicyPlayer(self.playout_network, session)
 
     self.run_dir = util.run_directory(config)
-    if not util.restore(session, self.run_dir, 'policy'):
-      raise Exception('Checkpoint not found in %s' % self.run_dir)
+    util.try_restore(session, self.run_dir, self.exploratory_network)
+    util.try_restore(session, self.run_dir, self.playout_network)
 
   def generate_positions(self):
     examples = []

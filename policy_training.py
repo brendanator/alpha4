@@ -1,5 +1,5 @@
 from consts import *
-from network import Network
+from network import PolicyNetwork
 import numpy as np
 import os
 from players import *
@@ -23,8 +23,8 @@ class PolicyTraining(object):
     self.session = tf.Session(config=tf.ConfigProto(gpu_options=tf.GPUOptions(
         allow_growth=True)))
 
-    self.policy_network = Network('policy')
-    self.policy_player = NetworkPlayer(self.policy_network, self.session)
+    self.policy_network = PolicyNetwork('policy')
+    self.policy_player = PolicyPlayer(self.policy_network, self.session)
 
     # Train ops
     self.create_train_op(self.policy_network)
@@ -35,7 +35,7 @@ class PolicyTraining(object):
         [RandomPlayer(), RandomThreatPlayer(), MaxThreatPlayer()])
     self.opponents.restore(self.session, self.run_dir)
 
-    if not util.restore(self.session, self.run_dir, 'policy'):
+    if not util.restore(self.session, self.run_dir, self.policy_network):
       self.session.run(tf.global_variables_initializer())
 
   def create_train_op(self, policy_network):
@@ -81,7 +81,7 @@ class PolicyTraining(object):
     self.save()
 
   def save(self):
-    util.save(self.session, self.run_dir, 'policy')
+    util.save(self.session, self.run_dir, self.policy_network)
     self.opponents.save(self.run_dir)
 
   def play_games(self, opponent):
@@ -156,9 +156,10 @@ class PolicyTraining(object):
 
   def create_new_opponent(self, name):
     # Create clone of policy_player
-    clone = Network(name)
+    clone = PolicyNetwork(name)
     self.session.run(self.policy_network.assign(clone))
-    new_opponent = NetworkPlayer(clone, self.session)
+    util.save(self.session, self.run_dir, clone)
+    new_opponent = PolicyPlayer(clone, self.session)
 
     self.opponents.decrease_win_rates()
     self.opponents.add_opponent(new_opponent)
@@ -200,7 +201,7 @@ class Opponents(object):
   def next_network_name(self):
     network_opponents = len([
         opponent for opponent in self.win_rates.keys()
-        if type(opponent) == NetworkPlayer
+        if type(opponent) == PolicyPlayer
     ])
     return 'network-%d' % (network_opponents + 1)
 
@@ -220,7 +221,7 @@ class Opponents(object):
           opponent_name, win_rate_string = line.strip().split()
           win_rate = float(win_rate_string)
           if opponent_name[:8] == 'network-':
-            opponent = NetworkPlayer(Network(opponent_name), session)
+            opponent = PolicyPlayer(PolicyNetwork(opponent_name), session)
             self.win_rates[opponent] = win_rate
           else:
             for opponent in self.win_rates.keys():
@@ -237,11 +238,11 @@ class Game(object):
     self.result = None
 
     # Make it equally likely to train on red as yellow
-    if np.random.rand() > 0.5:
+    if np.random.rand() < 0.5:
       self.move(np.random.choice(self.position.legal_columns()))
 
     # Setup a random position
-    while np.random.rand() > 0.75:
+    while np.random.rand() < 0.75:
       self.move(np.random.choice(self.position.legal_columns()))
 
   def move(self, move, policy_player_turn=False):

@@ -1,25 +1,25 @@
 from consts import *
-from network import Network
+from network import PolicyNetwork, ValueNetwork
 import numpy as np
-from players import NetworkPlayer
+from players import PolicyPlayer
+import queue
 import tensorflow as tf
+import threading
 import util
 
 
 class Alpha4(object):
   def __init__(self, network_name, run_dir):
-    self.session = tf.Session(config=tf.ConfigProto(gpu_options=tf.GPUOptions(
-        allow_growth=True)))
-    self.network = NetworkPlayer(Network(network_name), self.session)
-    self.network = RandomPlayer()
-    util.restore(self.session, run_dir, 'policy')
+
+    # self.network = PolicyPlayer(PolicyNetwork(network_name), self.session)
+    self.alpha_search = AlphaSearch(run_dir)
+    # self.session.run(tf.global_variables_initializer())
 
   def play(self, position):
-    search = AlphaSearch()
-    # return search.evaluate(position)
+    return self.alpha_search.best_move(position)
     # print(self.position.legal_moves())
 
-    return self.network.play([position])[0]
+    # return self.network.play([position])[0]
 
     # return np.random.choice(position.legal_columns())
 
@@ -50,157 +50,364 @@ class AlphaSearch(object):
   o
   """
 
-  def __init__(self):
-    self.rollouts = 0
-    self.max_rollouts = 20
-    self.value_queue = []
-    self.virtual_loss = 3
+  def __init__(self, run_dir):
+    # self.rollouts = 0
+    # self.max_rollouts = 2000
+    # self.max_rollouts = 100
+    # self.value_queue = []
+    # self.virtual_loss = 3
+    self.expansion_threshold = 3
+
+    self.session = tf.Session()
+    # self.session = tf.Session(config=tf.ConfigProto(gpu_options=tf.GPUOptions(
+    #     allow_growth=True)))
+    self.prior_network = PolicyNetwork('network-1')
+    self.rollout_network = PolicyNetwork('policy')
+    self.value_network = ValueNetwork('value')
+    # self.prior_thread = PriorThread(session, self.prior_network)
+    # self.rollout_thread = RolloutThread(session, self.rollout_network)
+    print(run_dir)
+    util.try_restore(self.session, run_dir, self.prior_network)
+    util.try_restore(self.session, run_dir, self.rollout_network)
+    util.try_restore(self.session, run_dir, self.value_network)
+
+  # def stop(self):
+  #   self.running = False
+  #   self.prior_thread.stop()
+  #   # self.rollout_thread.stop()
+
+  def best_move(self, position):
+    self.running = True
+    self.node_cache = {}
+    self.prior_queue = AllQueue()
+    self.rollout_queue = AllQueue(maxsize=32)
+    self.evaluation_queue = AllQueue(maxsize=32)
+
+    threads = []
+    for _ in range(2):
+      prior_thread = PriorThread(self.prior_queue, self.session,
+                                 self.prior_network)
+      threads.append(prior_thread)
+
+    for _ in range(2):
+      rollout_thread = RolloutThread(self.rollout_queue, self.session,
+                                     self.rollout_network)
+      threads.append(rollout_thread)
+
+    for _ in range(2):
+      evaluation_thread = EvaluationThread(self.evaluation_queue, self.session,
+                                           self.value_network)
+      threads.append(evaluation_thread)
+
+    for thread in threads:
+      thread.start()
+
+    def stop():
+      self.running = False
+      for thread in threads:
+        thread.stop()
+
+    stop_timer = threading.Timer(1.0, stop)
+    stop_timer.start()
+
+    root_node = self.get_or_create_node(position)
+    self.expand(root_node)
+    for node in root_node.children:
+      self.expand(node)
+
+    self.mcts_thread(root_node)
+
+    # Return column with greatest number of rollouts
+    print(np.round(root_node.priors, 4))
+    print(root_node.rollout_count.astype(np.int))
+    print(root_node.rollout_count.sum())
+    print()
+    return position.legal_columns()[np.argmax(root_node.rollout_count)]
+
+  def mcts_thread(self, root_node):
+    while self.running:
+      self.mcts(root_node)
+
+  def mcts(self, root_node):
+    # Selection
+    node = root_node
+    node_path = []
+    while not node.is_leaf:
+      index, child = node.max_action_child()
+      node_path.append((node, index))
+      node = child
+      node.visits += 1
+      if not node.terminal and node.visits >= self.expansion_threshold:
+        self.expand(node)
+
+    # Evaluation
+    if node.evaluated:
+      value = node.value
+      for parent, child_index in node_path:
+        parent.leaf_evaluation_total[child_index] += value
+        parent.leaf_evaluation_count[child_index] += 1
+    else:
+      self.add_to_queue(self.evaluation_queue, (node, node_path))
+
+
+    # Rollout
+    self.add_to_queue(self.rollout_queue, (node.position, node_path))
+
+  def expand(self, node):
+    if node.terminal: return
+
+    children = [
+        self.get_or_create_node(child) for child in node.position.children()
+    ]
+    node.expand(children)
+    # self.prior_thread.add_to_queue(node)
+    self.add_to_queue(self.prior_queue, node)
+
+  def add_to_queue(self, queue, item):
+    while self.running:
+      try:
+        queue.put(item, timeout=0.1)
+        return
+      except:
+        pass
+
+  def get_or_create_node(self, position):
+    if position not in self.node_cache:
+      self.node_cache[position] = Node(position)
+
+    return self.node_cache[position]
 
   def evaluate(self, position):
-    return self.rollout_thread(TreeNode(position))
+    [value] = self.session.run(self.value_network.value, {
+        self.value_network.turn: [position.turn],
+        self.value_network.disks: [position.disks],
+        self.value_network.empty: [position.empty],
+        self.value_network.legal_moves: [position.legal_moves],
+        self.value_network.threats: [position.threats]
+    })
+    return value
 
-  def rollout_thread(self, root_node):
-    while self.rollouts < self.max_rollouts:
-      self.rollouts += 1
 
-      # selection
-      selection_path = []
-      node = root_node
-      while True:
-        selection_path.append(node)
-        node = node.max_action_child()
-        if node.is_leaf:
-          # if node.visits >= self.expansion_threshold:
-          #   node = self.expand(node)
-          # else:
-          break
+class PriorThread(threading.Thread):
+  def __init__(self, queue, session, prior_network):
+    super(PriorThread, self).__init__()
+    self._session = session
+    self._prior_network = prior_network
+    self._queue = queue
+    self._running = False
 
-      # evaluation
-      if not node.evaluated:
-        self.value_queue.append((node, selection_path))
-        if len(self.value_queue) == 16:
-          value_nodes = [node for (node, _) in self.value_queue]
-          values = self.node_values(value_nodes)
-          for (value_node, path), value in zip(self.value_queue, values):
-            value_node.evaluated = True
-            for node in path:
-              node.value += value
-              node.visits += 1
+  def stop(self):
+    self._running = False
 
-      for parent in selection_path:
-        parent.visits += self.virtual_loss
-        parent.value -= self.virtual_loss
+  def run(self):
+    self._running = True
+    while self._running:
+      try:
+        nodes = list(set(self._queue.get(timeout=0.1)))
+      except:
+        nodes = []
 
-      rollout_value = self.rollout(node)
+      priors, legal_moves = self.priors([node.position for node in nodes])
 
-      # Backup
-      for parent in selection_path:
-        parent.visits += 1 - self.virtual_loss
-        parent.value += self.virtual_loss + rollout_value
+      for node, priors, legal_moves in zip(nodes, priors, legal_moves):
+        node.update_priors(priors[legal_moves.reshape(TOTAL_DISKS)])
+        self._running = False
 
-  def node_values(self, nodes):
-    return [node.position.result or 0 for node in nodes]
+  def priors(self, positions):
+    if not positions: return [], []
 
-  def rollout(self, node):
-    position = node.position
-    while not position.gameover:
-      moves = position.legal_moves()
-      position = position.move(np.random.choice(moves))
+    turns = [position.turn for position in positions]
+    disks = [position.disks for position in positions]
+    empty = [position.empty for position in positions]
+    legal_moves = [position.legal_moves for position in positions]
+    threats = [position.threats for position in positions]
 
-    return position.result
+    priors = self._session.run(self._prior_network.policy, {
+        self._prior_network.turn: turns,
+        self._prior_network.disks: disks,
+        self._prior_network.empty: empty,
+        self._prior_network.legal_moves: legal_moves,
+        self._prior_network.threats: threats,
+        self._prior_network.temperature: 10.0
+    })
 
-  def selection(self):
-    node = self.root_node
-    while not node.is_leaf:
-      node = node.max_action_child()
+    return priors, legal_moves
 
-  def expansion(self):
-    pass
 
-  def evaluation(self, node):
-    if not node.evaluated:
-      self.evaluation_queue.append(node)
+class RolloutThread(threading.Thread):
+  def __init__(self, queue, session, rollout_network):
+    super(RolloutThread, self).__init__()
+    self._session = session
+    self._rollout_network = rollout_network
+    self._queue = queue
+    self._running = False
 
-    self.apply_virtual_loss(node.parents)
-    self.rollout(node)
-    self.rollout_backup(node)
+  def stop(self):
+    self._running = False
 
-  def value_backup(self):
-    pass
+  def run(self):
+    self._running = True
+    rollouts = []
+    while self._running:
+      if not rollouts:
+        rollouts = self._queue.get()
 
-  def rollout_backup(self):
-    pass
+      positions = [position for (position, _) in rollouts]
+      moves = self.sample_moves(positions)
+      new_rollouts = []
+
+      for (position, node_path), move in zip(rollouts, moves):
+        position = position.move(move)
+        if position.gameover():
+          result = position.result
+          for parent, child_index in node_path:
+            parent.rollout_total[child_index] += result
+            parent.rollout_count[child_index] += 1
+        else:
+          new_rollouts.append((position, node_path))
+
+      rollouts = new_rollouts
+
+  def sample_moves(self, positions):
+    if not positions: return []
+
+    turns = [position.turn for position in positions]
+    disks = [position.disks for position in positions]
+    empty = [position.empty for position in positions]
+    legal_moves = [position.legal_moves for position in positions]
+    threats = [position.threats for position in positions]
+
+    return self._session.run(self._rollout_network.sample_move, {
+        self._rollout_network.turn: turns,
+        self._rollout_network.disks: disks,
+        self._rollout_network.empty: empty,
+        self._rollout_network.legal_moves: legal_moves,
+        self._rollout_network.threats: threats,
+        self._rollout_network.temperature: 5.0
+    })
+
+
+class EvaluationThread(threading.Thread):
+  def __init__(self, queue, session, value_network):
+    super(EvaluationThread, self).__init__()
+    self._session = session
+    self._value_network = value_network
+    self._queue = queue
+    self._running = False
+
+  def stop(self):
+    self._running = False
+
+  def run(self):
+    self._running = True
+    while self._running:
+      evaluations = self._queue.get()
+      positions = [node.position for (node, _) in evaluations]
+      values = self.values(positions)
+      for (node, node_path), value in zip(evaluations, values):
+        node.set_value(value)
+        for parent, child_index in node_path:
+          parent.leaf_evaluation_total[child_index] += value
+          parent.leaf_evaluation_count[child_index] += 1
+
+  def values(self, positions):
+    if not positions: return []
+
+    turns = [position.turn for position in positions]
+    disks = [position.disks for position in positions]
+    empty = [position.empty for position in positions]
+    legal_moves = [position.legal_moves for position in positions]
+    threats = [position.threats for position in positions]
+
+    return self._session.run(self._value_network.value, {
+        self._value_network.turn: turns,
+        self._value_network.disks: disks,
+        self._value_network.empty: empty,
+        self._value_network.legal_moves: legal_moves,
+        self._value_network.threats: threats
+    })
+
+
+EXPLORATION_RATE = 5
+LAMBDA_MIXING = 0.5
 
 
 class Node(object):
-  pass
-
-
-MAX_DEPTH = 3
-
-
-class TreeNode(Node):
-  def __init__(self, position, depth=0):
+  def __init__(self, position):
     self.position = position
-    self.is_leaf = depth >= MAX_DEPTH
-    self.evaluated = False
-    self.exploration_preference = 5
-    self.action_values = np.zeros(WIDTH)
-    self.visits = np.zeros(WIDTH)
-    self.total_visits = 0  # ?
-    self.value = 0
-    self.priors = np.zeros(WIDTH)
-    if depth < MAX_DEPTH:
-      self.children = [
-          TreeNode(child, depth + 1) for child in position.children()
-      ]
-
-  def exploration_bonus(self):
-    return self.exploration_preference * self.priors / (self.visits + 1)
-
-  def max_action_child(self):
-    if self.total_visits:
-      score = self.action_values + self.exploration_bonus()
+    self.terminal = position.gameover()
+    if self.terminal:
+      self.set_value(position.result)
     else:
-      score = self.priors
-
-    return self.children[np.argmax(score)]
-
-
-class LeafNode(Node):
-  def __init__(self):
+      self.evaluated = False
     self.is_leaf = True
-    self.is_terminal = False
     self.visits = 0
-    self.rollouts = 0
-    self.value = 0
-    self.rollout_wins = 0
-    self.priors = np.zeros(WIDTH)
+    self.parents = []
 
+  def expand(self, children):
+    num_children = len(children)
+    # Default to uniform priors
+    self.priors = np.tile(1 / num_children, num_children)
+    self.leaf_evaluation_total = np.zeros(num_children)
+    self.leaf_evaluation_count = np.tile(EPSILON, num_children)
+    self.rollout_total = np.zeros(num_children)
+    self.rollout_count = np.tile(EPSILON, num_children)
 
-class RolloutNode(Node):
-  pass
+    self.children = children
+    for child in children:
+      child.add_parent(self)
 
+    self.is_leaf = False
 
-class Edges(object):
-  def __init__(self):
-    self.exploration_preference = 5
-    self.action_values = np.zeros(WIDTH)
-    self.visits = np.zeros(WIDTH)
-    self.total_visits = 0  # ?
-    self.priors = np.zeros(WIDTH)
+  def add_parent(self, parent):
+    self.parents.append(parent)
+
+  def update_priors(self, priors):
+    self.priors = priors
 
   def exploration_bonus(self):
-    return self.exploration_preference * self.priors / (self.visits + 1)
+    return (self.priors * np.sqrt(self.rollout_count.sum()) /
+            (self.rollout_count + 1))
 
   def max_action_child(self):
-    if self.total_visits:
-      return np.argmax(self.action_values + self.exploration_bonus())
-    else:
-      return np.argmax(self.priors)
+    score = self.action_values() + EXPLORATION_RATE * self.exploration_bonus()
+    index = np.argmax(score)
+    return index, self.children[index]
+
+  def action_values(self):
+    leaf_values = self.leaf_evaluation_total / self.leaf_evaluation_count
+    rollout_values = self.rollout_total / self.rollout_count
+    action_values = (1 - LAMBDA_MIXING
+                     ) * leaf_values + LAMBDA_MIXING * rollout_values
+    return action_values * util.turn_win(self.position.turn)
+
+  def set_value(self, value):
+    self.value = value
+    self.evaluated = True
+
+
+class AllQueue(queue.Queue):
+  def _init(self, maxsize):
+    self.queue = []
+
+  def _qsize(self):
+    return len(self.queue)
+
+  def _put(self, item):
+    self.queue.append(item)
+
+  def _get(self):
+    result, self.queue = self.queue, []
+    return result
 
 
 if __name__ == '__main__':
+  alpha4 = Alpha4('alpha4', 'runs/run_7')
+  import cProfile as profile
   from position import Position
-  alpha4 = Alpha4(Position())
-  print(alpha4.play())
+  position = Position().move(0).move(0).move(0).move(0).move(0).move(0)
+  # profile.runctx('result = alpha4.play(position)',
+  #                globals(), locals(), 'tmp.prof')
+  result = alpha4.play(position)
+  print(result)
+  # print(alpha4.play(Position()))

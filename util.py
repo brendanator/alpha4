@@ -40,20 +40,25 @@ def turn_win(turn):
   return turn * -2 + 1  # RED = +1, YELLOW = -1
 
 
-def restore(session, run_dir, network_name):
+def restore(session, run_dir, network):
   latest_checkpoint = tf.train.latest_checkpoint(run_dir,
-                                                 network_name + '_checkpoint')
+                                                 network.scope + '_checkpoint')
   if latest_checkpoint:
-    tf.train.Saver().restore(session, latest_checkpoint)
+    tf.train.Saver(network.variables).restore(session, latest_checkpoint)
     print('Restoring checkpoint %s' % latest_checkpoint)
     return True
   else:
     return False
 
 
-def save(session, run_dir, network_name):
+def try_restore(session, run_dir, network):
+  if not restore(session, run_dir, network):
+    raise Exception('Checkpoint %s not found in %s' % (network.scope, run_dir))
+
+
+def save(session, run_dir, network):
   os.makedirs(run_dir, exist_ok=True)
-  tf.train.Saver().save(
+  tf.train.Saver(network.variables).save(
       session,
-      os.path.join(run_dir, network_name + 'model.ckpt'),
-      latest_filename=network_name + '_checkpoint')
+      os.path.join(run_dir, network.scope + '.ckpt'),
+      latest_filename=network.scope + '_checkpoint')

@@ -24,21 +24,23 @@ class ValueTraining(object):
         allow_growth=True)))
 
     self.value_network = ValueNetwork('value')
+    util.restore_or_initialize_network(self.session, self.run_dir,
+                                       self.value_network)
 
     # Train ops
     self.create_train_op(self.value_network)
     self.writer = tf.summary.FileWriter(self.run_dir)
-
-    if not util.restore(self.session, self.run_dir, self.value_network):
-      self.session.run(tf.global_variables_initializer())
+    util.restore_or_initialize_scope(self.session, self.run_dir,
+                                     self.training_scope.name)
 
   def create_train_op(self, value_network):
-    self.result = tf.placeholder(tf.float32, shape=[None], name='result')
-    loss = tf.reduce_mean(
-        tf.squared_difference(self.value_network.value, self.result))
-    optimizer = tf.train.AdamOptimizer(self.config.learning_rate)
-    self.global_step = tf.contrib.framework.get_or_create_global_step()
-    self.train_op = optimizer.minimize(loss, self.global_step)
+    with tf.variable_scope('value_training') as self.training_scope:
+      self.result = tf.placeholder(tf.float32, shape=[None], name='result')
+      loss = tf.reduce_mean(
+          tf.squared_difference(self.value_network.value, self.result))
+      optimizer = tf.train.AdamOptimizer(self.config.learning_rate)
+      self.global_step = tf.contrib.framework.get_or_create_global_step()
+      self.train_op = optimizer.minimize(loss, self.global_step)
 
     # Summary
     tf.summary.scalar('value_loss', loss)
@@ -63,7 +65,8 @@ class ValueTraining(object):
       self.save()
 
   def save(self):
-    util.save(self.session, self.run_dir, self.value_network)
+    util.save_network(self.session, self.run_dir, self.value_network)
+    util.save_scope(self.session, self.run_dir, self.training_scope.name)
 
 
 class PositionResults(object):

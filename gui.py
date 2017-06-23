@@ -7,10 +7,7 @@ import sys
 import util
 
 flags = tf.app.flags
-flags.DEFINE_string('run_dir', 'latest', 'Run directory')
-flags.DEFINE_string('policy_network', 'policy', 'Name of policy network')
 flags.DEFINE_boolean('threats', False, 'Show threats on board')
-config = flags.FLAGS
 
 
 class GUI(object):
@@ -61,7 +58,7 @@ class GUI(object):
         self.disks[row, column] = disk
 
     # Alpha4
-    self.alpha4 = Alpha4(config.policy_network, util.run_directory(config))
+    self.alpha4 = Alpha4(config)
 
     # Start new game
     self.new_game([RED])
@@ -70,6 +67,7 @@ class GUI(object):
     self.human_colours = human_colours
     self.position = Position()
     self.display_board()
+    self.alpha4.new_game()
     self.alpha4_move()
 
   def player_move(self, column):
@@ -86,9 +84,9 @@ class GUI(object):
 
     self.app.config(cursor='watch')
     self.app.update()
-    column = self.alpha4.play(self.position)
-    if column != None:
-      self.position = self.position.move(column)
+    move = self.alpha4.best_move(self.position)
+    if move != None:
+      self.position = self.position.move(move)
       self.display_board()
     self.app.config(cursor='')
 
@@ -131,6 +129,7 @@ class GUI(object):
 
 
 def main(_):
+  config = flags.FLAGS
   GUI(config).mainloop()
 
 

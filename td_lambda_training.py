@@ -26,28 +26,30 @@ class TDLambdaTraining(object):
         allow_growth=True)))
 
     self.value_network = ValueNetwork('value')
+    util.restore_or_initialize_network(self.session, self.run_dir,
+                                       self.value_network)
 
     # Train ops
     self.create_train_op(self.value_network)
     self.writer = tf.summary.FileWriter(self.run_dir)
-
-    if not util.restore(self.session, self.run_dir, self.value_network):
-      self.session.run(tf.global_variables_initializer())
+    util.restore_or_initialize_scope(self.session, self.run_dir,
+                                     self.training_scope.name)
 
   def create_train_op(self, value_network):
-    self.target = tf.placeholder(tf.float32, shape=[None], name='target')
-    loss = tf.reduce_mean(
-        tf.squared_difference(self.value_network.value, self.target))
-    optimizer = tf.train.GradientDescentOptimizer(self.config.learning_rate)
-    self.global_step = tf.contrib.framework.get_or_create_global_step()
-    self.train_op = optimizer.minimize(loss, self.global_step)
+    with tf.variable_scope('td_lambda_training') as self.training_scope:
+      self.target = tf.placeholder(tf.float32, shape=[None], name='target')
+      loss = tf.reduce_mean(
+          tf.squared_difference(self.value_network.value, self.target))
+      optimizer = tf.train.GradientDescentOptimizer(self.config.learning_rate)
+      self.global_step = tf.contrib.framework.get_or_create_global_step()
+      self.train_op = optimizer.minimize(loss, self.global_step)
 
-    # Summary
-    tf.summary.scalar('value_loss', loss)
-    tf.summary.histogram('target', self.target)
-    for var in value_network.variables + value_network.value_layers:
-      tf.summary.histogram(var.name, var)
-      self.summary = tf.summary.merge_all()
+      # Summary
+      tf.summary.scalar('value_loss', loss)
+      tf.summary.histogram('target', self.target)
+      for var in value_network.variables + value_network.value_layers:
+        tf.summary.histogram(var.name, var)
+        self.summary = tf.summary.merge_all()
 
   def train(self):
     for _ in range(self.config.num_games):
@@ -119,7 +121,8 @@ class TDLambdaTraining(object):
     return targets
 
   def save(self):
-    util.save(self.session, self.run_dir, self.value_network)
+    util.save_network(self.session, self.run_dir, self.value_network)
+    util.save_scope(self.session, self.run_dir, self.training_scope.name)
 
 
 def main(_):

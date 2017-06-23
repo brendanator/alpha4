@@ -32,8 +32,9 @@ class PositionGenerator(object):
     self.playout_player = PolicyPlayer(self.playout_network, session)
 
     self.run_dir = util.run_directory(config)
-    util.try_restore(session, self.run_dir, self.exploratory_network)
-    util.try_restore(session, self.run_dir, self.playout_network)
+    util.restore_network_or_fail(session, self.run_dir,
+                                 self.exploratory_network)
+    util.restore_network_or_fail(session, self.run_dir, self.playout_network)
 
   def generate_positions(self):
     examples = []

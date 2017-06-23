@@ -41,8 +41,6 @@ class BaseNetwork(object):
           ],
           axis=1)
 
-      # self.feature_planes = tf.transpose(self.feature_planes, [0, 2, 3, 1])
-
   @property
   def variables(self):
     return tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, self.scope)
@@ -108,9 +106,6 @@ class PolicyNetwork(BaseNetwork):
                              (legal_moves - 1) * ILLEGAL_PENALTY)
 
         self.policy = tf.nn.softmax(legal_disk_logits, name='policy')
-        # TODO Remove?
-        self.legal_column_policy = tf.boolean_mask(self.policy,
-                                                   tf.equal(legal_moves, 1))
         self.sample_move = tf.squeeze(
             tf.multinomial(legal_disk_logits, 1) % WIDTH, axis=1)
 

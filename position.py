@@ -72,7 +72,7 @@ class Position(object):
     self.hash_value ^= DISK_HASHES[colour, row, column]
 
   def check_result_and_threats(self, row, column):
-    if not self.result and not np.any(self.empty):
+    if not self.result and np.count_nonzero(self.empty) == 0:
       self.result = DRAW
 
     for four in DISK_FOURS[row, column]:
@@ -111,6 +111,11 @@ class Position(object):
 
   def children(self):
     return [self.move(move) for move in self.legal_columns()]
+
+  def is_ancestor(self, other):
+    # All our disks must appear in other disks
+    other_disks = other.disks & np.invert(self.empty)
+    return np.all(self.disks == other_disks)
 
   def __hash__(self):
     return hash(self.hash_value)

@@ -77,7 +77,7 @@ for colour in range(COLOURS):
     row_hash = disks_in_column | yellow_disks
     for column in range(WIDTH):
       row_column_hash = row_hash << (9 * column)
-      DISK_HASHES[colour, row, column] = row_column_hash
+      DISK_HASHES[colour, HEIGHT - row - 1, column] = row_column_hash
 
 if __name__ == '__main__':
   print(FOURS[0])
@@ -88,4 +88,4 @@ if __name__ == '__main__':
   print(ROW_EDGE_DISTANCE.reshape([HEIGHT, WIDTH]))
   print(COLUMN_EDGE_DISTANCE.reshape([HEIGHT, WIDTH]))
   print(ODDS.reshape([HEIGHT, WIDTH]))
-  print(DISK_HASHES)
+  print(np.array(map(bin, DISK_HASHES.flatten())).reshape(DISK_HASHES.shape))

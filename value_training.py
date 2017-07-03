@@ -138,6 +138,9 @@ class PositionTargets(object):
         threats.append(position.threats)
         targets.append(result * 0.95**(num_moves - sample_move))
 
+        if len(turn) % 100000 == 0:
+          print('Loaded %d positions' % len(turn))
+
     turn = np.array(turn)
     disks = np.array(disks)
     empty = np.array(empty)

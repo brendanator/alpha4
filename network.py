@@ -1,5 +1,6 @@
 from consts import *
 import tensorflow as tf
+from tensorflow.python.client import device_lib
 import util
 
 
@@ -49,12 +50,18 @@ class BaseNetwork(object):
             tf.stack([feature_planes, flipped], axis=1), feature_planes_shape)
 
     with tf.name_scope('conv_layers'):
+      if self.gpu_available():
+        data_format = 'channels_first'
+      else:
+        feature_planes = tf.transpose(feature_planes, [0, 2, 3, 1])
+        data_format = 'channels_last'
+
       conv1 = tf.layers.conv2d(
           feature_planes,
           filters=32,
           kernel_size=[4, 5],
           padding='same',
-          data_format='channels_first',
+          data_format=data_format,
           use_bias=False,
           name='conv1')
 
@@ -63,7 +70,7 @@ class BaseNetwork(object):
           filters=32,
           kernel_size=[4, 5],
           padding='same',
-          data_format='channels_first',
+          data_format=data_format,
           activation=tf.nn.relu,
           name='conv2')
 
@@ -72,7 +79,7 @@ class BaseNetwork(object):
           filters=32,
           kernel_size=[4, 5],
           padding='same',
-          data_format='channels_first',
+          data_format=data_format,
           activation=tf.nn.relu,
           name='conv3')
 
@@ -80,13 +87,17 @@ class BaseNetwork(object):
           conv3,
           filters=1,
           kernel_size=[1, 1],
-          data_format='channels_first',
+          data_format=data_format,
           name='final_conv')
       disk_bias = tf.get_variable('disk_bias', shape=[TOTAL_DISKS])
       self.conv_output = tf.add(
           tf.contrib.layers.flatten(final_conv), disk_bias, name='conv_output')
 
       self.conv_layers = [conv1, conv2, conv3, self.conv_output]
+
+  def gpu_available(self):
+    devices = device_lib.list_local_devices()
+    return len([d for d in devices if d.device_type == 'GPU']) > 0
 
   @property
   def variables(self):

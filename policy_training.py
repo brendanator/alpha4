@@ -11,7 +11,7 @@ flags = tf.app.flags
 flags.DEFINE_integer('batch_size', 256, 'Batch size')
 flags.DEFINE_integer('batches', 1000, 'Number of batches')
 flags.DEFINE_string('run_dir', None, 'Run directory')
-flags.DEFINE_float('entropy', 0.01, 'Entropy regularisation rate')
+flags.DEFINE_float('entropy', 0.03, 'Entropy regularisation rate')
 flags.DEFINE_float('learning_rate', 0.001, 'Adam learning rate')
 config = flags.FLAGS
 
@@ -21,8 +21,8 @@ class PolicyTraining(object):
     self.config = config
     self.run_dir = util.run_directory(config)
 
-    self.session = tf.Session(config=tf.ConfigProto(
-        gpu_options=tf.GPUOptions(allow_growth=True)))
+    self.session = tf.Session(config=tf.ConfigProto(gpu_options=tf.GPUOptions(
+        allow_growth=True)))
 
     self.policy_network = PolicyNetwork('policy')
     self.policy_player = PolicyPlayer(self.policy_network, self.session)
@@ -36,7 +36,9 @@ class PolicyTraining(object):
                                      self.training_scope.name)
 
     self.opponents = Opponents(
-        [RandomPlayer(), RandomThreatPlayer(), MaxThreatPlayer()])
+        [RandomPlayer(),
+         RandomThreatPlayer(),
+         MaxThreatPlayer()])
     self.opponents.restore_networks(self.session, self.run_dir)
 
   def create_train_op(self, policy_network):
@@ -51,8 +53,8 @@ class PolicyTraining(object):
 
       result_loss = -tf.reduce_mean(
           tf.log(move_probability) * turn * self.result)
-      entropy_regularisation = (-config.entropy *
-                                tf.reduce_mean(policy_network.entropy))
+      entropy_regularisation = (
+          -config.entropy * tf.reduce_mean(policy_network.entropy))
       loss = result_loss + entropy_regularisation
 
       optimizer = tf.train.AdamOptimizer(self.config.learning_rate)
@@ -60,7 +62,7 @@ class PolicyTraining(object):
       self.train_op = optimizer.minimize(loss, self.global_step)
 
       # Summary
-      tf.summary.scalar('policy_loss', loss)
+      tf.summary.scalar('loss', loss)
       for var in policy_network.variables + policy_network.policy_layers:
         tf.summary.histogram(var.name, var)
       self.summary = tf.summary.merge_all()
@@ -77,7 +79,7 @@ class PolicyTraining(object):
         print('All opponents beaten. Creating %s' % name)
         self.create_new_opponent(name)
 
-      if step % 10 == 0:
+      if step % 100 == 0:
         self.save()
 
     self.save()
@@ -139,14 +141,16 @@ class PolicyTraining(object):
 
   def process_results(self, opponent, games, step, summary):
     win_rate = np.mean([game.policy_player_score for game in games])
-    average_moves = sum(
-        [len(game.moves) for game in games]) / self.config.batch_size
+    average_moves = sum([len(game.moves)
+                         for game in games]) / self.config.batch_size
 
     opponent_summary = tf.Summary()
     opponent_summary.value.add(
-        tag=opponent.name + '/win_rate', simple_value=win_rate)
+        tag=self.training_scope.name + '/' + opponent.name + '/win_rate',
+        simple_value=win_rate)
     opponent_summary.value.add(
-        tag=opponent.name + '/moves', simple_value=average_moves)
+        tag=self.training_scope.name + '/' + opponent.name + '/moves',
+        simple_value=average_moves)
 
     self.writer.add_summary(summary, step)
     self.writer.add_summary(opponent_summary, step)
@@ -191,7 +195,7 @@ class Opponents(object):
   def all_beaten(self):
     result = True
     for win_rate in self.win_rates.values():
-      result = result and win_rate > 0.8
+      result = result and win_rate > 0.7
     return result
 
   def choose_opponent(self):
@@ -224,6 +228,7 @@ class Opponents(object):
           opponent_name, win_rate_string = line.strip().split()
           win_rate = float(win_rate_string)
           if opponent_name[:8] == 'network-':
+            print('Restoring %s' % opponent_name)
             network = PolicyNetwork(opponent_name)
             util.restore_network_or_fail(session, run_dir, network)
             opponent = PolicyPlayer(network, session)

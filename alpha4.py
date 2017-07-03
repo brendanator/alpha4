@@ -8,55 +8,37 @@ import util
 
 flags = tf.app.flags
 flags.DEFINE_string('run_dir', 'latest', 'Run directory to load networks from')
-flags.DEFINE_string('prior_network', 'network-1', 'Name of prior network')
+flags.DEFINE_string('prior_network', 'policy', 'Name of prior network')
 flags.DEFINE_string('rollout_network', 'policy', 'Name of policy network')
 flags.DEFINE_string('value_network', 'value', 'Name of value network')
 flags.DEFINE_integer('mcts_threads', 1, 'Number of MCTS threads to run')
 flags.DEFINE_integer('prior_threads', 2, 'Number of prior threads to run')
 flags.DEFINE_integer('rollout_threads', 4, 'Number of rollout threads to run')
 flags.DEFINE_integer('value_threads', 2, 'Number of value threads to run')
-flags.DEFINE_float('prior_temperature', 10.0,
+flags.DEFINE_float('prior_temperature', 15.0,
                    'Softmax temperature in prior network')
-flags.DEFINE_float('rollout_temperature', 1.0,
+flags.DEFINE_float('rollout_temperature', 5.0,
                    'Softmax temperature in rollout network')
+flags.DEFINE_boolean(
+    'use_symmetry', True,
+    'Also feed horizontally flipped position into networks and take average')
 flags.DEFINE_float('exploration_rate', 5.0,
                    'Exploration rate to encourage visiting less seen nodes')
-flags.DEFINE_float('lambda_mixing', 0.5,
-                   'Proportion of node value from rollouts vs evaluations')
 flags.DEFINE_float(
     'virtual_loss', 3.0,
     'Virtual loss applied to discourage visiting duplicate nodes')
-flags.DEFINE_integer('expansion_threshold', 10,
+flags.DEFINE_float('rollout_proportion', 0.5,
+                   'Proportion of node value from rollouts vs evaluations')
+flags.DEFINE_integer('expansion_threshold', 20,
                      'Number of times a node is visited before expansion')
-flags.DEFINE_float('timeout', 3, 'Seconds to run MCTS for')
+flags.DEFINE_float('timeout', 3.0, 'Seconds to run MCTS for')
+flags.DEFINE_boolean('verbose', True, 'Print results of MCTS')
+flags.DEFINE_string(
+    'move_choice', 'rollouts',
+    '[rollouts|value] - choose move by value or number of rollouts')
 
 
 class Alpha4(object):
-  """
-  ### Selection
-  - Start at the root node and descend the tree until we reach a leaf node
-  - Select the max action $a_t = \argmax_a [Q(s_t,a) + u(s_t, a)]$ where $u(s_t,a) = c_{puct}P(s,a) \frac{\sqrt{\sum_b N_r(s,b)}}{1 + N_r(s,a)}$ where $c_{puct}$ is a constant determining the level of exploration
-  - This search control strategy initially prefers actions with high prior probability and low visit count, but asymptotically prefers actions with high action value
-  ### Evaluation
-  - The leaf is added to the queue for evaluation by the value network unless it already had been evaluated
-  - The second rollout begins at the leaf node and continues until the end of the game using the rollout policy network and the final result $z_t$ is calculated
-  ### Backup
-  - At each in-tree step $t \leq L$ the rollout stats are updates as if it has lost $n_{vl}$ games. $N_r(s,a) \leftarrow N_r(s,a) + n_{vl}$, $W_r(s,a) \leftarrow W_r(s,a) - n_{vl}$. This virtual loss discourages other threads from search the same variation
-  - At the ed of the simulation the rollout stats are updated with the outcome. $N_r(s,a) \leftarrow N_r(s,a) - n_{vl} + 1$, $W_r(s,a) \leftarrow W_r(s,a) + n_{vl} + z_t$
-  - Asynchronously a separate backward pass updates the value statistics when the value network is complete
-  - The overall evaluation is a weighted average of the Monte Carlo stats $Q(s,a) = (1-\lambda)\frac{W_v(s,a)}{N_v(s,a)} + \lambda\frac{W_r(s,a)}{N_r(s,a)}$
-  - All updates are performed lock-free
-  ### Expansion
-  - When an edge visit count exceeds a threshold $n_{thr}$ the successor state is added to the search tree with initial values and becomes a leaf node
-      - $N(s', a)=0$ - number of visits
-      - $N_r(s', a)=0$ - number of rollout
-      - $W(s', a)=0$ - win score by value
-      - $W_r(s', a)=0$ - win score by rollout
-      - $P(s',a)=p_{\sigma}^{\beta}(a|s')$ - prior action probabilities, where $p_{\sigma}^{\beta}$ is similar to the rollout policy network but with more features and $\beta$ is the softmax temperature
-  - Then the state is added to 2 queues nt have the value and policy networks evaluated for the state. The prior probability is then updated with the policy network results which also uses the softmax temperature $\beta$
-  o
-  """
-
   def __init__(self, config):
     self.config = config
 
@@ -65,9 +47,19 @@ class Alpha4(object):
         allow_growth=True)))
 
     # Create networks
-    self.prior_network = PolicyNetwork(config.prior_network)
-    self.rollout_network = PolicyNetwork(config.rollout_network)
-    self.value_network = ValueNetwork(config.value_network)
+    self.prior_network = PolicyNetwork(
+        scope=config.prior_network,
+        temperature=config.prior_temperature,
+        use_symmetry=config.use_symmetry)
+
+    self.rollout_network = PolicyNetwork(
+        scope=config.rollout_network,
+        temperature=config.rollout_temperature,
+        reuse=config.prior_network == config.rollout_network,
+        use_symmetry=config.use_symmetry)
+
+    self.value_network = ValueNetwork(
+        scope=config.value_network, use_symmetry=config.use_symmetry)
 
     # Load networks from checkpoints
     run_dir = util.run_directory(config)
@@ -86,14 +78,22 @@ class Alpha4(object):
     self.transpositions = {}
 
   def best_move(self, position, timeout=None):
+    if len(position.legal_columns()) == 1:
+      return position.legal_columns()[0]
+    elif position.counter_move is not None:
+      return position.counter_move
+    else:
+      return self.run_mcts(position, timeout or self.config.timeout)
+
+  def run_mcts(self, position, timeout):
     self.mcts_threads_running = self.queue_threads_running = True
-    timer = self.start_timer(timeout or self.config.timeout)
+    timer = self.start_timer(timeout)
     self.prune_transpositions(position)
     root_node = self.expand_root_node(position)
     queue_threads = self.start_queue_threads()
     mcts_threads = self.start_mcts_threads(root_node)
     self.wait_for_threads(timer, queue_threads, mcts_threads)
-    return self.most_played_move(position, root_node)
+    return self.choose_best_move(position, root_node)
 
   def start_timer(self, timeout):
     timer = threading.Timer(timeout, self.stop)
@@ -104,11 +104,17 @@ class Alpha4(object):
     self.mcts_threads_running = False
 
   def prune_transpositions(self, position):
+    # Prune transpositions
     self.transpositions = {
         cached_position: node
         for cached_position, node in self.transpositions.items()
         if position.is_ancestor(cached_position)
     }
+
+    # Remove pruned parents from nodes
+    all_nodes = set(self.transpositions.values())
+    for node in all_nodes:
+      node.parents &= all_nodes
 
   def expand_root_node(self, position):
     root_node = self.get_or_create_node(position)
@@ -169,17 +175,30 @@ class Alpha4(object):
     # Cancel timer in case stop was called by something else
     timer.cancel()
 
-  def most_played_move(self, position, root_node):
-    print(root_node.value)
-    print(np.round(root_node.priors, 4))
-    print(root_node.rollout_counts.astype(np.int))
-    print(root_node.rollout_counts.sum())
-    print([c.value for c in root_node.children])
-    print()
+  def choose_best_move(self, position, root_node):
+    if self.config.verbose:
+      np.set_printoptions(
+          formatter={'float': '{: 0.4f}'.format,
+                     'int': '{:7d}'.format})
+      print(position)
+      print('Priors        ', root_node.priors)
+      print('Rollouts      ', root_node.rollout_counts.astype(np.int))
+      print('Child values  ',
+            np.array([child.value for child in root_node.children]))
+      print('Value         ', '%.4f' % -root_node.value)
+      print('Total rollouts', int(root_node.rollout_counts.sum()))
+      print()
 
-    columns = position.legal_columns()
-    rollouts = root_node.rollout_counts
-    return columns[np.argmax(rollouts)]
+    if self.config.move_choice == 'rollouts':
+      columns = position.legal_columns()
+      rollouts = root_node.rollout_counts
+      return columns[np.argmax(rollouts)]
+    elif self.config.move_choice == 'value':
+      columns = position.legal_columns()
+      values = [child.value for child in root_node.children]
+      return columns[np.argmax(values)]
+    else:
+      raise Exception('%s is not valid move_choice' % self.config.move_choice)
 
   # Monte-Carlo Tree Search
   def mcts_thread(self, root_node):
@@ -187,32 +206,38 @@ class Alpha4(object):
       self.mcts(root_node)
 
   def mcts(self, root_node):
-    node, node_path = self.select(root_node)
-    self.evaluate(node, node_path)
-    self.rollout(node, node_path)
+    node, selection = self.select(root_node)
+    self.evaluate(node, selection)
+    self.rollout(node, selection)
 
   # Selection
   def select(self, node):
-    node.apply_virtual_loss()
-    node_path = []
+    selection = []
     while node.children:
-      index, child = node.max_action_child()
-      node_path.append((node, index))
+      index, child = node.max_value_child()
+      selection.append((node, index))
       node = child
       if node.rollout_count >= self.config.expansion_threshold:
         self.expand(node)
-      node.apply_virtual_loss()
 
-    return node, node_path
+    node.backup_virtual_loss(selection)
+
+    return node, selection
 
   # Expansion
   def expand(self, node):
     if node.children or node.terminal: return
 
-    node.expand(
-        [self.get_or_create_node(child) for child in node.position.children()])
-
-    self.add_to_queue(self.prior_queue, node)
+    if node.position.counter_move is not None:
+      node.expand([
+          self.get_or_create_node(
+              node.position.move(node.position.counter_move))
+      ])
+    else:
+      node.expand([
+          self.get_or_create_node(child) for child in node.position.children()
+      ])
+      self.add_to_queue(self.prior_queue, node)
 
   def get_or_create_node(self, position):
     if position not in self.transpositions:
@@ -225,7 +250,9 @@ class Alpha4(object):
       nodes = list(set(nodes))
       priors, legal_moves = self.priors([node.position for node in nodes])
       for node, priors, legal_moves in zip(nodes, priors, legal_moves):
-        node.update_priors(priors[legal_moves.reshape(TOTAL_DISKS)])
+        priors = priors.reshape(HEIGHT, WIDTH).sum(axis=0)
+        priors = priors[node.position.legal_columns()]
+        node.update_priors(priors)
 
   def priors(self, positions):
     turns = [position.turn for position in positions]
@@ -239,30 +266,26 @@ class Alpha4(object):
         self.prior_network.disks: disks,
         self.prior_network.empty: empty,
         self.prior_network.legal_moves: legal_moves,
-        self.prior_network.threats: threats,
-        self.prior_network.temperature: self.config.prior_temperature
+        self.prior_network.threats: threats
     })
 
     return priors, legal_moves
 
   # Evaluation
-  def evaluate(self, node, node_path):
+  def evaluate(self, node, selection):
     if node.evaluated:
-      evaluation = node.evaluation
-      for parent, _ in node_path:
-        parent.update_leaf_evaluation(evaluation)
+      node.backup_evaluation_result(node.evaluation, selection)
     else:
-      self.add_to_queue(self.value_queue, (node, node_path))
+      self.add_to_queue(self.value_queue, (node, selection))
 
   def value_thread(self):
     for evaluations in self.queued_items(self.value_queue):
       positions = [node.position for (node, _) in evaluations]
       values = self.values(positions)
 
-      for (node, node_path), value in zip(evaluations, values):
+      for (node, selection), value in zip(evaluations, values):
         node.set_evaluation(value)
-        for parent, _ in node_path:
-          parent.update_leaf_evaluation(value)
+        node.backup_evaluation_result(value, selection)
 
   def values(self, positions):
     if not positions: return []
@@ -282,33 +305,40 @@ class Alpha4(object):
     })
 
   # Rollouts
-  def rollout(self, node, node_path):
-    self.add_to_queue(self.rollout_queue, (node, node_path))
+  def rollout(self, node, selection):
+    if node.terminal:
+      node.backup_rollout_result(node.evaluation, selection)
+    else:
+      self.add_to_queue(self.rollout_queue, (node, selection))
 
   def rollout_thread(self):
     for rollouts in self.queued_items(self.rollout_queue):
       self.run_rollouts(rollouts)
 
   def run_rollouts(self, rollouts):
-    positions = [node.position for (node, _) in rollouts]
+    positions = [
+        self.play_counter_moves(node.position) for (node, _) in rollouts
+    ]
     while rollouts:
       moves = self.rollout_moves(positions)
       new_positions, new_rollouts = [], []
 
-      for position, rollout, move in zip(positions, rollouts, moves):
-        position = position.move(move)
+      for position, move, rollout in zip(positions, moves, rollouts):
+        position = self.play_counter_moves(position.move(move))
         if position.gameover():
-          result = position.result
-          node, node_path = rollout
-          node.update_rollout(result)
-          for parent, child_index in node_path:
-            parent.update_rollout(result, child_index)
+          node, selection = rollout
+          node.backup_rollout_result(position.result, selection)
         else:
           new_positions.append(position)
           new_rollouts.append(rollout)
 
       positions = new_positions
       rollouts = new_rollouts
+
+  def play_counter_moves(self, position):
+    while position.counter_move is not None:
+      position = position.move(position.counter_move)
+    return position
 
   def rollout_moves(self, positions):
     if not positions: return []
@@ -324,8 +354,7 @@ class Alpha4(object):
         self.rollout_network.disks: disks,
         self.rollout_network.empty: empty,
         self.rollout_network.legal_moves: legal_moves,
-        self.rollout_network.threats: threats,
-        self.rollout_network.temperature: self.config.rollout_temperature
+        self.rollout_network.threats: threats
     })
 
   # Queue utils
@@ -347,9 +376,10 @@ class Alpha4(object):
 
 class Node(object):
   __slots__ = [
-      'position', 'config', 'terminal', 'evaluated', 'value', 'children',
-      'leaf_evaluation_total', 'leaf_evaluation_count', 'rollout_total',
-      'rollout_count', 'priors', 'rollout_counts', 'evaluation'
+      'position', 'config', 'terminal', 'evaluated', 'value', 'parents',
+      'children', 'evaluation', 'evaluation_total', 'evaluation_counts',
+      'evaluation_count', 'evaluation_value', 'rollout_total', 'rollout_count',
+      'rollout_counts', 'rollout_value', 'priors'
   ]
 
   def __init__(self, position, config):
@@ -357,66 +387,154 @@ class Node(object):
     self.config = config
     self.terminal = position.gameover()
     if self.terminal:
-      self.set_evaluation(position.result)
+      self.evaluated = True
+      self.evaluation = position.result
+      self.evaluation_value = position.result
+      self.rollout_value = position.result
+      self.value = position.result * -util.turn_win(self.position.turn)
     else:
       self.evaluated = False
       self.value = 0
+      self.rollout_value = 0
+      self.evaluation_value = 0
     self.children = []
+    self.parents = set()
 
-    self.leaf_evaluation_total = 0
-    self.leaf_evaluation_count = EPSILON  # Avoid divide by 0
+    self.evaluation_total = 0
+    self.evaluation_count = EPSILON  # Avoid divide by 0
+    self.evaluation_counts = None
     self.rollout_total = 0
     self.rollout_count = EPSILON  # Avoid divide by 0
+    self.rollout_counts = None
 
   def expand(self, children):
     num_children = len(children)
-    # Default to uniform priors
-    self.priors = np.tile(1 / num_children, num_children)
-    self.rollout_counts = np.tile(EPSILON, num_children)  # Avoid divide by 0
-    self.children = children
 
-  def apply_virtual_loss(self):
-    self.rollout_total -= self.config.virtual_loss
-    self.rollout_count += self.config.virtual_loss
+    # Default priors proportional to the number of fours the move belongs to
+    if num_children > 1:
+      ratios = (DISK_FOUR_COUNTS * [self.position.legal_moves]).sum(
+          axis=(0, 1))
+      child_ratios = ratios[ratios > 0]
+      self.priors = child_ratios / child_ratios.sum()
+    else:
+      self.priors = np.array([1])
+
+    # Set these to EPSILON to avoid divide by 0
+    self.rollout_counts = np.tile(EPSILON, num_children)
+    self.evaluation_counts = np.tile(EPSILON, num_children)
+
+    self.children = children
+    for child in children:
+      child.add_parent(self)
+
+  def add_parent(self, parent):
+    self.parents |= {parent}
+
+  def all_ancestors(self):
+    ancestors = self.parents
+    while ancestors:
+      new_ancestors = set()
+      for ancestor in ancestors:
+        yield ancestor
+        new_ancestors |= ancestor.parents
+      ancestors = new_ancestors
 
   def update_priors(self, priors):
+    if len(priors) != len(self.children):
+      print('priors', priors, self.children)
     self.priors = priors
 
-  def update_rollout(self, result, child_index=None):
-    self.rollout_total += result + self.config.virtual_loss
-    self.rollout_count += 1 - self.config.virtual_loss
-    if child_index is not None:
-      self.rollout_counts[child_index] += 1
-    self.update_value()
+  def backup_virtual_loss(self, selection):
+    self.backup_rollout_change(
+        value_change=-self.config.virtual_loss,
+        count_change=self.config.virtual_loss,
+        selection=selection)
 
-  def update_leaf_evaluation(self, value):
-    self.leaf_evaluation_total += value
-    self.leaf_evaluation_count += 1
-    self.update_value()
+  def backup_rollout_result(self, result, selection):
+    self.backup_rollout_change(
+        value_change=result + self.config.virtual_loss,
+        count_change=1 - self.config.virtual_loss,
+        selection=selection)
 
-  def update_value(self):
-    rollout_values = self.rollout_total / self.rollout_count
-    leaf_values = self.leaf_evaluation_total / self.leaf_evaluation_count
-    values = (self.config.lambda_mixing * rollout_values +
-              (1 - self.config.lambda_mixing) * leaf_values)
-    self.value = values * -util.turn_win(self.position.turn)
+  def backup_rollout_change(self, value_change, count_change, selection):
+    self.rollout_total += value_change
+    self.rollout_count += count_change
+    self.update_rollout_value()
 
-  def max_action_child(self):
+    for selected_node, child_index in selection:
+      selected_node.rollout_counts[child_index] += count_change
+
+    for node in self.all_ancestors():
+      node.update_rollout_value()
+
+  def update_rollout_value(self):
+    if self.rollout_counts is not None:
+      total_rollouts = self.rollout_count + self.rollout_counts.sum()
+      node_value = self.rollout_total / total_rollouts
+      child_proportions = self.rollout_counts / total_rollouts
+      child_values = [child.rollout_value for child in self.children]
+      self.rollout_value = node_value + (
+          child_proportions * child_values).sum()
+    else:
+      self.rollout_value = self.rollout_total / self.rollout_count
+
+    self.update_combined_value()
+
+  def set_evaluation(self, value):
+    self.evaluation = value
+    self.evaluated = True
+
+  def backup_evaluation_result(self, value, selection):
+    self.evaluation_total += value
+    self.evaluation_count += 1
+    self.update_evaluation_value()
+
+    for selected_node, child_index in selection:
+      selected_node.evaluation_counts[child_index] += 1
+
+    for node in self.all_ancestors():
+      node.update_evaluation_value()
+
+  def update_evaluation_value(self):
+    if self.evaluation_counts is not None:
+      total_evaluations = self.evaluation_count + self.evaluation_counts.sum()
+      child_proportions = self.evaluation_counts / total_evaluations
+      child_values = [child.evaluation_value for child in self.children]
+      node_value = self.evaluation_total / total_evaluations
+      self.evaluation_value = (
+          (child_proportions * child_values).sum() + node_value)
+    else:
+      self.evaluation_value = self.evaluation_total / self.evaluation_count
+
+    self.update_combined_value()
+
+  def update_combined_value(self):
+    if self.terminal: return
+
+    value = (self.config.rollout_proportion * self.rollout_value +
+             (1 - self.config.rollout_proportion) * self.evaluation_value)
+
+    self.value = value * -util.turn_win(self.position.turn)
+
+  def max_value_child(self):
     values = np.array([child.value for child in self.children])
     score = values + self.config.exploration_rate * self.exploration_bonus()
     # Add noise to fairly break ties caused by uniform priors
     score += np.random.uniform(low=0, high=0.0001, size=len(self.children))
     index = np.argmax(score)
+    if index > len(self.children):
+      print(self.position)
+      print('index', index)
+      print('children', self.children)
+      print('score', score)
+      print('priors', self.priors)
+      print('rollouts', self.rollout_counts)
+      print('exploration_bonus', self.exploration_bonus())
     return index, self.children[index]
 
   def exploration_bonus(self):
-    return (self.priors * np.sqrt(self.rollout_counts.sum()) /
-            self.rollout_counts)
-
-  def set_evaluation(self, value):
-    self.evaluation = value
-    self.value = value * -util.turn_win(self.position.turn)
-    self.evaluated = True
+    return (
+        self.priors * np.sqrt(self.rollout_counts.sum()) / self.rollout_counts)
 
 
 class AllQueue(Queue):
@@ -437,10 +555,15 @@ class AllQueue(Queue):
 
 
 if __name__ == '__main__':
-  alpha4 = Alpha4(flags.FLAGS)
   from position import Position
-  position = Position().move(1).move(4).move(3).move(4).move(3).move(4).move(
-      3).move(3)
-  print(position)
-  result = alpha4.best_move(position)
+  alpha4 = Alpha4(flags.FLAGS)
+  position = Position("""
+    .......
+    ...r...
+    ...ry..
+    ...yr..
+    ...ry..
+    .y.ry.r
+  """)
+  result = alpha4.best_move(position, timeout=3)
   print(result)

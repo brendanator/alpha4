@@ -47,7 +47,7 @@ for row in range(HEIGHT - 3):
 FOURS = np.array(FOURS)
 
 DISK_FOURS = {}
-DISK_FOUR_COUNTS = np.zeros([HEIGHT, WIDTH], bool)
+DISK_FOUR_COUNTS = np.zeros([HEIGHT, WIDTH], int)
 for row in range(HEIGHT):
   for column in range(WIDTH):
     disk_fours = []

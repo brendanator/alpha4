@@ -69,7 +69,7 @@ def restore_or_initialize_network(session, run_dir, network):
     print('Restored %s network from %s' % (network.scope, latest_checkpoint))
   else:
     session.run(tf.variables_initializer(network.variables))
-    print('Initialized %s network' % scope)
+    print('Initialized %s network' % network.scope)
 
 
 def restore_network_or_fail(session, run_dir, network):

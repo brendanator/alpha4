@@ -1,11 +1,12 @@
-import numpy as np
 from consts import *
+import numpy as np
+import re
 
 
 class Position(object):
   __slots__ = [
       'turn', 'disks', 'empty', 'legal_moves', 'threats', 'result', 'win',
-      'hash_value'
+      'counter_move', 'hash_value'
   ]
 
   def __init__(self, position=None, column=None, disks=None, turn=RED):
@@ -19,15 +20,16 @@ class Position(object):
       # Threats are a single missing disk from a four
       self.threats = np.zeros([COLOURS, HEIGHT, WIDTH], dtype=bool)
       self.result = None
+      self.counter_move = None
       self.hash_value = NEW_POSITION_HASH
     elif type(position) == str:
-      # Construct from __repr__
+      # Construct from __repr__ or __str__
       self.disks = np.zeros([COLOURS, HEIGHT, WIDTH], dtype=bool)
       self.empty = np.ones([HEIGHT, WIDTH], dtype=bool)
       self.legal_moves = np.zeros([HEIGHT, WIDTH], dtype=bool)
       self.hash_value = NEW_POSITION_HASH
 
-      for index, disk in enumerate(position):
+      for index, disk in enumerate(re.sub('\s+', '', position)):
         row = index // WIDTH
         column = index % WIDTH
         if disk == '.':
@@ -48,6 +50,7 @@ class Position(object):
       for row in range(HEIGHT):
         for column in range(WIDTH):
           self.check_result_and_threats(row, column)
+      self.check_counter_move()
 
     else:
       # Play move from old position
@@ -64,9 +67,10 @@ class Position(object):
       self.legal_moves[row, column] = False
       if row:
         self.legal_moves[row - 1, column] = True
+      self.check_result_and_threats(row, column)
+      self.check_counter_move()
       self.hash_value = position.hash_value
       self.update_hash(position.turn, row, column)
-      self.check_result_and_threats(row, column)
 
   def update_hash(self, colour, row, column):
     self.hash_value ^= DISK_HASHES[colour, row, column]
@@ -94,6 +98,21 @@ class Position(object):
         elif red_four_count == 0:
           self.threats[YELLOW] |= empty
 
+  def check_counter_move(self):
+    self.counter_move = None
+    if self.gameover():
+      return
+
+    if self.turn == RED:
+      our_threats, their_threats = self.threats & self.legal_moves
+    else:
+      their_threats, our_threats = self.threats & self.legal_moves
+
+    if np.any(our_threats):
+      self.counter_move = np.argmax(our_threats) % WIDTH
+    elif np.any(their_threats):
+      self.counter_move = np.argmax(their_threats) % WIDTH
+
   def gameover(self):
     return self.result is not None
 
@@ -110,7 +129,10 @@ class Position(object):
       return self
 
   def children(self):
-    return [self.move(move) for move in self.legal_columns()]
+    if not self.gameover():
+      return [self.move(move) for move in self.legal_columns()]
+    else:
+      return []
 
   def is_ancestor(self, other):
     # All our disks must appear in other disks
@@ -204,20 +226,20 @@ if __name__ == '__main__':
   assert (pos.result is RED_WIN)
 
   # Test __str__
-  assert (pos.__str__() == ('...r...\n'
-                            '...y...\n'
-                            '..rr...\n'
-                            '..ry...\n'
-                            '..ry...\n'
-                            '..ryy..'))
+  assert (str(pos) == ('...r...\n'
+                       '...y...\n'
+                       '..rr...\n'
+                       '..ry...\n'
+                       '..ry...\n'
+                       '..ryy..'))
 
   # Test __repr__
-  pos_repr = Position(repr(pos))
-  assert (pos.turn == pos_repr.turn)
-  assert (np.all(pos.disks == pos_repr.disks))
-  assert (np.all(pos.empty == pos_repr.empty))
-  assert (np.all(pos.legal_moves == pos_repr.legal_moves))
-  assert (np.all(pos.threats == pos_repr.threats))
-  assert (pos.result == pos_repr.result)
-  assert (np.all(pos.win == pos_repr.win))
-  assert (hash(pos) == hash(pos_repr))
+  for pos_repr in [Position(repr(pos)), Position(str(pos))]:
+    assert (pos.turn == pos_repr.turn)
+    assert (np.all(pos.disks == pos_repr.disks))
+    assert (np.all(pos.empty == pos_repr.empty))
+    assert (np.all(pos.legal_moves == pos_repr.legal_moves))
+    assert (np.all(pos.threats == pos_repr.threats))
+    assert (pos.result == pos_repr.result)
+    assert (np.all(pos.win == pos_repr.win))
+    assert (hash(pos) == hash(pos_repr))

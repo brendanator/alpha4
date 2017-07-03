@@ -8,9 +8,9 @@ import tensorflow as tf
 import util
 
 flags = tf.app.flags
-flags.DEFINE_integer('batch_size', 256, 'Batch size')
-flags.DEFINE_integer('batches', 1000, 'Number of batches')
 flags.DEFINE_string('run_dir', None, 'Run directory')
+flags.DEFINE_integer('batch_size', 256, 'Batch size')
+flags.DEFINE_integer('batches', 10000, 'Number of batches')
 flags.DEFINE_float('entropy', 0.03, 'Entropy regularisation rate')
 flags.DEFINE_float('learning_rate', 0.001, 'Adam learning rate')
 config = flags.FLAGS

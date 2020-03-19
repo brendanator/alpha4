@@ -141,8 +141,7 @@ class PolicyTraining(object):
 
   def process_results(self, opponent, games, step, summary):
     win_rate = np.mean([game.policy_player_score for game in games])
-    average_moves = sum([len(game.moves)
-                         for game in games]) / self.config.batch_size
+    average_moves = sum(len(game.moves) for game in games) / self.config.batch_size
 
     opponent_summary = tf.Summary()
     opponent_summary.value.add(
@@ -263,10 +262,7 @@ class Game(object):
     self.positions.append(self.position)
     if self.position.gameover():
       self.result = self.position.result
-      if self.result:
-        self.policy_player_score = float(policy_player_turn)
-      else:
-        self.policy_player_score = 0.5
+      self.policy_player_score = float(policy_player_turn) if self.result else 0.5
 
 
 def main(_):

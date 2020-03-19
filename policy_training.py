@@ -1,11 +1,13 @@
+import os
+
+import numpy as np
+import tensorflow as tf
+
+import util
 from consts import *
 from network import PolicyNetwork
-import numpy as np
-import os
 from players import *
 from position import Position
-import tensorflow as tf
-import util
 
 flags = tf.app.flags
 flags.DEFINE_string("run_dir", None, "Run directory")

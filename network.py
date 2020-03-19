@@ -1,7 +1,8 @@
-from consts import *
 import tensorflow as tf
 from tensorflow.python.client import device_lib
+
 import util
+from consts import *
 
 
 class BaseNetwork(object):

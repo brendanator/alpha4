@@ -1,8 +1,9 @@
-from datetime import datetime
 import os
-import tensorflow as tf
 import threading
 import time
+from datetime import datetime
+
+import tensorflow as tf
 
 
 def run_directory(config):

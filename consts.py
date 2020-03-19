@@ -50,10 +50,7 @@ DISK_FOURS = {}
 DISK_FOUR_COUNTS = np.zeros([HEIGHT, WIDTH], int)
 for row in range(HEIGHT):
   for column in range(WIDTH):
-    disk_fours = []
-    for four in FOURS:
-      if four[row, column]:
-        disk_fours.append(four)
+    disk_fours = [four for four in FOURS if four[row, column]]
     DISK_FOURS[row, column] = disk_fours
     DISK_FOUR_COUNTS[row, column] = len(disk_fours)
 

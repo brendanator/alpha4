@@ -15,7 +15,8 @@ TILED_ROWS = np.arange(TOTAL_DISKS - 1, -1, -1) // WIDTH
 TILED_COLUMNS = np.arange(TOTAL_DISKS) % WIDTH
 
 ROW_EDGE_DISTANCE = np.min([TILED_ROWS, np.flip(TILED_ROWS, axis=0)], axis=0)
-COLUMN_EDGE_DISTANCE = np.min([TILED_COLUMNS, np.flip(TILED_COLUMNS, axis=0)], axis=0)
+COLUMN_EDGE_DISTANCE = np.min(
+    [TILED_COLUMNS, np.flip(TILED_COLUMNS, axis=0)], axis=0)
 ODDS = TILED_ROWS % 2
 
 FOURS = []
@@ -69,7 +70,7 @@ DISK_HASHES = np.zeros([COLOURS, HEIGHT, WIDTH], np.uint64)
 for colour in range(COLOURS):
     for row in range(HEIGHT):
         disks_in_column = row ^ (row + 1)
-        yellow_disks = 2 ** (row + 3) if colour == YELLOW else 0
+        yellow_disks = 2**(row + 3) if colour == YELLOW else 0
         row_hash = disks_in_column | yellow_disks
         for column in range(WIDTH):
             row_column_hash = row_hash << (9 * column)

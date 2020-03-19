@@ -9,7 +9,9 @@ import tensorflow as tf
 def run_directory(config):
     def find_previous_run(dir):
         if os.path.isdir(dir):
-            runs = [child[4:] for child in os.listdir(dir) if child[:4] == "run_"]
+            runs = [
+                child[4:] for child in os.listdir(dir) if child[:4] == "run_"
+            ]
             if runs:
                 return max(int(run) for run in runs)
 
@@ -43,7 +45,8 @@ def turn_win(turn):
 
 def restore_or_initialize_scope(session, run_dir, scope):
     variables = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope)
-    latest_checkpoint = tf.train.latest_checkpoint(run_dir, scope + "_checkpoint")
+    latest_checkpoint = tf.train.latest_checkpoint(run_dir,
+                                                   scope + "_checkpoint")
     if latest_checkpoint:
         tf.train.Saver(variables).restore(session, latest_checkpoint)
         print("Restored %s scope from %s" % (scope, latest_checkpoint))
@@ -64,11 +67,11 @@ def save_scope(session, run_dir, scope):
 
 def restore_or_initialize_network(session, run_dir, network):
     latest_checkpoint = tf.train.latest_checkpoint(
-        run_dir, network.scope + "_checkpoint"
-    )
+        run_dir, network.scope + "_checkpoint")
     if latest_checkpoint:
         tf.train.Saver(network.variables).restore(session, latest_checkpoint)
-        print("Restored %s network from %s" % (network.scope, latest_checkpoint))
+        print("Restored %s network from %s" %
+              (network.scope, latest_checkpoint))
     else:
         session.run(tf.variables_initializer(network.variables))
         print("Initialized %s network" % network.scope)
@@ -76,15 +79,14 @@ def restore_or_initialize_network(session, run_dir, network):
 
 def restore_network_or_fail(session, run_dir, network):
     latest_checkpoint = tf.train.latest_checkpoint(
-        run_dir, network.scope + "_checkpoint"
-    )
+        run_dir, network.scope + "_checkpoint")
     if latest_checkpoint:
         tf.train.Saver(network.variables).restore(session, latest_checkpoint)
-        print("Restored %s network from %s" % (network.scope, latest_checkpoint))
+        print("Restored %s network from %s" %
+              (network.scope, latest_checkpoint))
     else:
-        raise Exception(
-            "Network checkpoint %s not found in %s" % (network.scope, run_dir)
-        )
+        raise Exception("Network checkpoint %s not found in %s" %
+                        (network.scope, run_dir))
 
 
 def save_network(session, run_dir, network):

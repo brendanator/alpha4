@@ -23,42 +23,42 @@ class PolicyTraining(object):
         self.config = config
         self.run_dir = util.run_directory(config)
 
-        self.session = tf.Session(
-            config=tf.ConfigProto(gpu_options=tf.GPUOptions(allow_growth=True))
-        )
+        self.session = tf.Session(config=tf.ConfigProto(
+            gpu_options=tf.GPUOptions(allow_growth=True)))
 
         self.policy_network = PolicyNetwork("policy")
         self.policy_player = PolicyPlayer(self.policy_network, self.session)
-        util.restore_or_initialize_network(
-            self.session, self.run_dir, self.policy_network
-        )
+        util.restore_or_initialize_network(self.session, self.run_dir,
+                                           self.policy_network)
 
         # Train ops
         self.create_train_op(self.policy_network)
         self.writer = tf.summary.FileWriter(self.run_dir)
-        util.restore_or_initialize_scope(
-            self.session, self.run_dir, self.training_scope.name
-        )
+        util.restore_or_initialize_scope(self.session, self.run_dir,
+                                         self.training_scope.name)
 
         self.opponents = Opponents(
-            [RandomPlayer(), RandomThreatPlayer(), MaxThreatPlayer()]
-        )
+            [RandomPlayer(),
+             RandomThreatPlayer(),
+             MaxThreatPlayer()])
         self.opponents.restore_networks(self.session, self.run_dir)
 
     def create_train_op(self, policy_network):
         with tf.variable_scope("policy_training") as self.training_scope:
             self.move = tf.placeholder(tf.int32, shape=[None], name="move")
-            self.result = tf.placeholder(tf.float32, shape=[None], name="result")
+            self.result = tf.placeholder(tf.float32,
+                                         shape=[None],
+                                         name="result")
 
             policy = tf.reshape(policy_network.policy, [-1, HEIGHT, WIDTH])
             move = tf.expand_dims(tf.one_hot(self.move, WIDTH), axis=1)
             turn = util.turn_win(policy_network.turn)
             move_probability = tf.reduce_sum(policy * move, axis=[1, 2])
 
-            result_loss = -tf.reduce_mean(tf.log(move_probability) * turn * self.result)
+            result_loss = -tf.reduce_mean(
+                tf.log(move_probability) * turn * self.result)
             entropy_regularisation = -config.entropy * tf.reduce_mean(
-                policy_network.entropy
-            )
+                policy_network.entropy)
             loss = result_loss + entropy_regularisation
 
             optimizer = tf.train.AdamOptimizer(self.config.learning_rate)
@@ -95,17 +95,20 @@ class PolicyTraining(object):
 
     def play_games(self, opponent):
         # Create games
-        games = incomplete_games = [Game() for _ in range(self.config.batch_size)]
+        games = incomplete_games = [
+            Game() for _ in range(self.config.batch_size)
+        ]
 
         # Let opponent play first in half of the games
-        self.play_move(games[0 : len(games) // 2], opponent)
+        self.play_move(games[0:len(games) // 2], opponent)
         player = self.policy_player
 
         while incomplete_games:
             self.play_move(incomplete_games, player)
             player = self.policy_player if player != self.policy_player else opponent
             incomplete_games = [
-                game for game in incomplete_games if not game.position.gameover()
+                game for game in incomplete_games
+                if not game.position.gameover()
             ]
 
         return games
@@ -154,7 +157,8 @@ class PolicyTraining(object):
 
     def process_results(self, opponent, games, step, summary):
         win_rate = np.mean([game.policy_player_score for game in games])
-        average_moves = sum(len(game.moves) for game in games) / self.config.batch_size
+        average_moves = sum(len(game.moves)
+                            for game in games) / self.config.batch_size
 
         opponent_summary = tf.Summary()
         opponent_summary.value.add(
@@ -171,16 +175,13 @@ class PolicyTraining(object):
 
         self.opponents.update_win_rate(opponent, win_rate)
 
-        print(
-            "Step %d. Opponent %s, win rate %.2f <%.2f>, %.2f moves"
-            % (
-                step,
-                opponent.name,
-                win_rate,
-                self.opponents.win_rates[opponent],
-                average_moves,
-            )
-        )
+        print("Step %d. Opponent %s, win rate %.2f <%.2f>, %.2f moves" % (
+            step,
+            opponent.name,
+            win_rate,
+            self.opponents.win_rates[opponent],
+            average_moves,
+        ))
 
     def create_new_opponent(self, name):
         # Create clone of policy_player
@@ -211,7 +212,8 @@ class Opponents(object):
 
     def update_win_rate(self, opponent, win_rate):
         # Win rate is a moving average
-        self.win_rates[opponent] = self.win_rates[opponent] * 0.9 + win_rate * 0.1
+        self.win_rates[
+            opponent] = self.win_rates[opponent] * 0.9 + win_rate * 0.1
 
     def all_beaten(self):
         result = True
@@ -222,32 +224,25 @@ class Opponents(object):
     def choose_opponent(self):
         # More difficult opponents are chosen more often
         win_rates = np.maximum(list(self.win_rates.values()), 0.1)
-        probs = (1 / win_rates ** 2) - 1
+        probs = (1 / win_rates**2) - 1
         normalised_probs = probs / probs.sum()
-        return np.random.choice(list(self.win_rates.keys()), p=normalised_probs)
+        return np.random.choice(list(self.win_rates.keys()),
+                                p=normalised_probs)
 
     def next_network_name(self):
-        network_opponents = len(
-            [
-                opponent
-                for opponent in self.win_rates.keys()
-                if type(opponent) == PolicyPlayer
-            ]
-        )
+        network_opponents = len([
+            opponent for opponent in self.win_rates.keys()
+            if type(opponent) == PolicyPlayer
+        ])
         return "network-%d" % (network_opponents + 1)
 
     def save_opponent_stats(self, run_dir):
         with open(os.path.join(run_dir, "opponents"), "w") as f:
-            f.write(
-                "\n".join(
-                    [
-                        opponent.name + " " + str(win_rate)
-                        for opponent, win_rate in sorted(
-                            self.win_rates.items(), key=lambda x: x[1]
-                        )
-                    ]
-                )
-            )
+            f.write("\n".join([
+                opponent.name + " " + str(win_rate)
+                for opponent, win_rate in sorted(self.win_rates.items(),
+                                                 key=lambda x: x[1])
+            ]))
 
     def restore_networks(self, session, run_dir):
         opponents_file = os.path.join(run_dir, "opponents")
@@ -292,7 +287,8 @@ class Game(object):
         self.positions.append(self.position)
         if self.position.gameover():
             self.result = self.position.result
-            self.policy_player_score = float(policy_player_turn) if self.result else 0.5
+            self.policy_player_score = float(
+                policy_player_turn) if self.result else 0.5
 
 
 def main(_):

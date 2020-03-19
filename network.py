@@ -16,30 +16,31 @@ class BaseNetwork(object):
                 [1, 2, HEIGHT, WIDTH],
             )
 
-            self.disks = tf.placeholder(
-                tf.float32, shape=[None, 2, HEIGHT, WIDTH], name="disks"
-            )
+            self.disks = tf.placeholder(tf.float32,
+                                        shape=[None, 2, HEIGHT, WIDTH],
+                                        name="disks")
 
-            self.empty = tf.placeholder(
-                tf.float32, shape=[None, HEIGHT, WIDTH], name="empty"
-            )
+            self.empty = tf.placeholder(tf.float32,
+                                        shape=[None, HEIGHT, WIDTH],
+                                        name="empty")
             empty = tf.expand_dims(self.empty, axis=1)
 
-            self.legal_moves = tf.placeholder(
-                tf.float32, shape=[None, HEIGHT, WIDTH], name="legal_moves"
-            )
+            self.legal_moves = tf.placeholder(tf.float32,
+                                              shape=[None, HEIGHT, WIDTH],
+                                              name="legal_moves")
             legal_moves = tf.expand_dims(self.legal_moves, axis=1)
 
-            self.threats = tf.placeholder(
-                tf.float32, shape=[None, 2, HEIGHT, WIDTH], name="threats"
-            )
+            self.threats = tf.placeholder(tf.float32,
+                                          shape=[None, 2, HEIGHT, WIDTH],
+                                          name="threats")
 
             constant_features = np.array(
                 [TILED_ROWS, ODDS, ROW_EDGE_DISTANCE, COLUMN_EDGE_DISTANCE],
                 dtype=np.float32,
             ).reshape([1, 4, HEIGHT, WIDTH])
             batch_size = tf.shape(self.turn)[0]
-            tiled_constant_features = tf.tile(constant_features, [batch_size, 1, 1, 1])
+            tiled_constant_features = tf.tile(constant_features,
+                                              [batch_size, 1, 1, 1])
 
             feature_planes = tf.concat(
                 [
@@ -55,11 +56,12 @@ class BaseNetwork(object):
 
             if use_symmetry:
                 # Interleave horizontally flipped position
-                feature_planes_shape = [-1] + feature_planes.shape.as_list()[1:]
+                feature_planes_shape = [-1
+                                        ] + feature_planes.shape.as_list()[1:]
                 flipped = tf.reverse(feature_planes, axis=[3])
                 feature_planes = tf.reshape(
-                    tf.stack([feature_planes, flipped], axis=1), feature_planes_shape
-                )
+                    tf.stack([feature_planes, flipped], axis=1),
+                    feature_planes_shape)
 
         with tf.name_scope("conv_layers"):
             if self.gpu_available():
@@ -106,9 +108,9 @@ class BaseNetwork(object):
                 name="final_conv",
             )
             disk_bias = tf.get_variable("disk_bias", shape=[TOTAL_DISKS])
-            self.conv_output = tf.add(
-                tf.contrib.layers.flatten(final_conv), disk_bias, name="conv_output"
-            )
+            self.conv_output = tf.add(tf.contrib.layers.flatten(final_conv),
+                                      disk_bias,
+                                      name="conv_output")
 
             self.conv_layers = [conv1, conv2, conv3, self.conv_output]
 
@@ -119,7 +121,8 @@ class BaseNetwork(object):
     @property
     def variables(self):
         # Add '/' to stop network-1 containing network-10 variables
-        return tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, self.scope + "/")
+        return tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
+                                 self.scope + "/")
 
     def assign(self, other):
         return [
@@ -135,12 +138,11 @@ class PolicyNetwork(BaseNetwork):
 
             with tf.name_scope("policy"):
                 self.temperature = tf.placeholder_with_default(
-                    temperature, (), name="temperature"
-                )
+                    temperature, (), name="temperature")
 
-                disk_logits = tf.divide(
-                    self.conv_output, self.temperature, name="disk_logits"
-                )
+                disk_logits = tf.divide(self.conv_output,
+                                        self.temperature,
+                                        name="disk_logits")
 
                 if use_symmetry:
                     # Calculate average of actual and horizontally flipped position
@@ -151,7 +153,9 @@ class PolicyNetwork(BaseNetwork):
                     )
                     disk_logits = tf.reshape(
                         tf.reduce_mean(
-                            tf.concat([normal, tf.reverse(flipped, axis=[3])], axis=1),
+                            tf.concat(
+                                [normal, tf.reverse(flipped, axis=[3])],
+                                axis=1),
                             axis=1,
                         ),
                         [-1, TOTAL_DISKS],
@@ -161,10 +165,8 @@ class PolicyNetwork(BaseNetwork):
                 #   - Legal moves have positive logits
                 #   - Illegal moves have -ILLEGAL_PENALTY logits
                 legal_moves = tf.contrib.layers.flatten(self.legal_moves)
-                legal_disk_logits = (
-                    tf.nn.relu(disk_logits) * legal_moves
-                    + (legal_moves - 1) * ILLEGAL_PENALTY
-                )
+                legal_disk_logits = (tf.nn.relu(disk_logits) * legal_moves +
+                                     (legal_moves - 1) * ILLEGAL_PENALTY)
 
                 self.policy = tf.nn.softmax(legal_disk_logits, name="policy")
                 self.sample_move = tf.squeeze(
@@ -203,10 +205,12 @@ class ValueNetwork(BaseNetwork):
 
                 if use_symmetry:
                     # Calculate average of actual and horizontally flipped position
-                    self.value = tf.reduce_mean(
-                        tf.reshape(value, [-1, 2]), axis=1, name="value"
-                    )
+                    self.value = tf.reduce_mean(tf.reshape(value, [-1, 2]),
+                                                axis=1,
+                                                name="value")
                 else:
                     self.value = tf.squeeze(value, axis=1, name="value")
 
-                self.value_layers = self.conv_layers + [fully_connected, self.value]
+                self.value_layers = self.conv_layers + [
+                    fully_connected, self.value
+                ]

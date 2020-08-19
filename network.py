@@ -106,10 +106,10 @@ class BaseNetwork(object):
                              self.scope + '/')
 
   def assign(self, other):
-    copy_ops = []
-    for self_var, other_var in zip(self.variables, other.variables):
-      copy_ops.append(tf.assign(other_var, self_var))
-    return copy_ops
+    return [
+        tf.assign(other_var, self_var)
+        for self_var, other_var in zip(self.variables, other.variables)
+    ]
 
 
 class PolicyNetwork(BaseNetwork):
